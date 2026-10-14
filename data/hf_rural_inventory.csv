@@ -1,0 +1,9 @@
+blood_group,available_units,low_stock_threshold,units_expiring_soon
+A+,43,22,2
+A-,5,2,0
+AB+,10,5,0
+AB-,5,2,0
+B+,49,20,2
+B-,6,2,0
+O+,94,53,4
+O-,10,4,0
