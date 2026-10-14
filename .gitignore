@@ -34,3 +34,4 @@ Thumbs.db
 # Testing and Logs
 .pytest_cache/
 *.log
+run_tunnel.sh
