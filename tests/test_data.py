@@ -58,6 +58,44 @@ class DataTests(unittest.TestCase):
         self.assertIn("Request ID", reqs.columns)
         self.assertIn("Urgency Level", reqs.columns)
 
+    def test_insert_or_update_demand_record(self):
+        from blood_bank_ai.data import insert_or_update_demand_record
+        df = pd.DataFrame([{"date": pd.Timestamp("2026-01-01"), "blood_group": "A+", "demand_units": 10.0}])
+        # Insert new date
+        df2 = insert_or_update_demand_record(df, "2026-01-02", "A+", 15.0)
+        self.assertEqual(len(df2), 2)
+        # Update existing date (overwrite mode)
+        df3 = insert_or_update_demand_record(df2, "2026-01-02", "A+", 25.0, mode="overwrite")
+        self.assertEqual(len(df3), 2)
+        self.assertEqual(float(df3[df3["date"] == pd.Timestamp("2026-01-02")]["demand_units"].iloc[0]), 25.0)
+        # Update existing date (add mode)
+        df4 = insert_or_update_demand_record(df3, "2026-01-02", "A+", 5.0, mode="add")
+        self.assertEqual(float(df4[df4["date"] == pd.Timestamp("2026-01-02")]["demand_units"].iloc[0]), 30.0)
+
+    def test_update_inventory_units(self):
+        from blood_bank_ai.data import update_inventory_units
+        inv = pd.DataFrame([{"blood_group": "A+", "available_units": 10, "low_stock_threshold": 5, "units_expiring_soon": 1}])
+        updated = update_inventory_units(inv, "A+", available_units=20, low_stock_threshold=8)
+        self.assertEqual(int(updated[updated["blood_group"] == "A+"]["available_units"].iloc[0]), 20)
+        self.assertEqual(int(updated[updated["blood_group"] == "A+"]["low_stock_threshold"].iloc[0]), 8)
+
+    def test_add_hospital_request(self):
+        from blood_bank_ai.data import generate_sample_hospital_requests, add_hospital_request
+        reqs = generate_sample_hospital_requests()
+        initial_len = len(reqs)
+        updated, req_id = add_hospital_request(reqs, "Metro Hospital", "O-", 5, "🚨 Emergency")
+        self.assertEqual(len(updated), initial_len + 1)
+        self.assertTrue(req_id.startswith("REQ-"))
+        self.assertEqual(updated.iloc[0]["Blood Group"], "O-")
+
+    def test_add_donor_to_registry(self):
+        from blood_bank_ai.data import generate_sample_donor_registry, add_donor_to_registry
+        donors = generate_sample_donor_registry()
+        initial_len = len(donors)
+        updated, donor_id = add_donor_to_registry(donors, "John Doe", "B+", days_since_last_donation=100)
+        self.assertEqual(len(updated), initial_len + 1)
+        self.assertEqual(updated.iloc[0]["Eligibility Status"], "Eligible")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -92,7 +92,7 @@ pip install -r requirements.txt
 ```bash
 python -m unittest discover -s tests -v
 ```
-*(All 20 unit tests should pass cleanly).*
+*(All 24 unit tests should pass cleanly).*
 
 ### 4. Start the Dashboard
 ```bash
@@ -104,17 +104,18 @@ Open [http://localhost:8501](http://localhost:8501) in your browser.
 
 ## 📊 Dashboard Modules & Features
 
-The dashboard is structured into 7 dedicated presentation tabs:
+The dashboard is structured into 8 dedicated presentation tabs:
 
-1. **🩺 Executive Dashboard & Stock Risk:** Top Expected Results banner (A+, B+, O-, AB+), real-time stock levels with `Normal`, `Low`, and `Critical` indicators, FIFO expiration warnings, and component shelf-life guidelines.
-2. **🔮 AI Demand Forecasting:** Historical demand trends with 7-day and 14-day rolling averages, backtest comparisons across all 5 models, multi-step recursive forecasts with analytical confidence intervals, and Explainable AI (XAI) feature importances.
-3. **📊 Exploratory Data Analysis (EDA):** Blood-group demand distribution boxplots, day-of-week seasonality, and longitudinal monthly demand patterns.
-4. **📦 Safety Stock & ROP Planner:** Mathematical supply chain formulas:
+1. **⚡ Live Data Studio & Instant AI Output (Real-Time Ingestion):** Side-by-side interactive studio where users can insert new daily demand records, edit data via an interactive spreadsheet table (`st.data_editor`), adjust facility inventory levels, or test stress scenarios. **AI forecasts, safety stock thresholds, ROP, and risk alerts update simultaneously in real time on the same screen.**
+2. **🩺 Executive Dashboard & Stock Risk:** Top Expected Results banner (A+, B+, O-, AB+), real-time stock levels with `Normal`, `Low`, and `Critical` indicators, inline stock level adjuster, FIFO expiration warnings, and component shelf-life guidelines.
+3. **🔮 AI Demand Forecasting:** Historical demand trends with 7-day and 14-day rolling averages, inline observation inserter, backtest comparisons across all 5 models, multi-step recursive forecasts with analytical confidence intervals, and Explainable AI (XAI) feature importances.
+4. **📊 Exploratory Data Analysis (EDA):** Blood-group demand distribution boxplots, day-of-week seasonality, and longitudinal monthly demand patterns.
+5. **📦 Safety Stock & ROP Planner:** Mathematical supply chain formulas:
    $$SS = Z \times \sigma_D \times \sqrt{L}$$
    $$ROP = (\bar{D} \times L) + SS$$
-5. **🩸 Emergency Allocation Matrix:** $8 \times 8$ Red Blood Cell and Plasma compatibility matrices with emergency trauma surge allocation simulator.
-6. **🏥 Hospital Requests & Donor Operations:** Hospital clinical request dispatcher and donor registry tracking 90-day donation cooldown intervals.
-7. **📑 Multi-Group Benchmark:** Unified comparative performance scorecard across all 8 blood groups and 5 candidate models.
+6. **🩸 Emergency Allocation Matrix:** $8 \times 8$ Red Blood Cell and Plasma compatibility matrices with emergency trauma surge allocation simulator.
+7. **🏥 Hospital Requests & Donor Operations:** Interactive clinical hospital request dispatcher with real-time inventory deduction/allocation and centralized donor registry tracking 90-day donation cooldown intervals.
+8. **📑 Multi-Group Benchmark:** Unified comparative performance scorecard across all 8 blood groups and 5 candidate models.
 
 ---
 

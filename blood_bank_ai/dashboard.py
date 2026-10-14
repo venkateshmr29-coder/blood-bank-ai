@@ -18,12 +18,16 @@ from blood_bank_ai.compatibility import (
     simulate_emergency_allocation,
 )
 from blood_bank_ai.data import (
+    add_donor_to_registry,
+    add_hospital_request,
     generate_sample_donor_registry,
     generate_sample_hospital_requests,
     get_dataset_summary,
+    insert_or_update_demand_record,
     load_demand_data,
     load_huggingface_facility_data,
     load_inventory_data,
+    update_inventory_units,
 )
 from blood_bank_ai.forecasting import (
     compute_key_group_forecasts,
@@ -185,8 +189,8 @@ def run_dashboard():
             help="Select Hugging Face real-world healthcare multi-facility records, benchmark daily series, or upload a custom CSV.",
         )
 
-        demand_df = None
-        inventory_df = None
+        facility_choice = "District Hospital"
+        uploaded_file = None
 
         if data_source_mode == "🌐 Hugging Face Healthcare Dataset (Real)":
             facility_choice = st.selectbox(
@@ -195,29 +199,85 @@ def run_dashboard():
                 index=0,
                 help="Dataset from Hugging Face: electricsheepafrica/blood-bank-supply-management (~30,000 facility observations).",
             )
-            demand_df, inventory_df = get_cached_hf_data(facility_choice)
-            st.success(f"Loaded Hugging Face: **{facility_choice}** ({len(demand_df):,} daily records).")
-
+            source_key = f"HF_{facility_choice}"
         elif data_source_mode == "📁 Upload Custom Demand CSV":
             uploaded_file = st.file_uploader(
                 "Upload Demand CSV (columns: date, blood_group, demand_units)",
                 type=["csv"],
             )
-            if uploaded_file is not None:
+            source_key = f"UPLOAD_{uploaded_file.name if uploaded_file else 'NONE'}"
+        else:
+            source_key = "BENCHMARK_SYNTHETIC"
+
+        # Initialize or reload session state if source changed or missing
+        if ("active_demand_df" not in st.session_state) or (st.session_state.get("current_source_key") != source_key):
+            if data_source_mode == "🌐 Hugging Face Healthcare Dataset (Real)":
+                init_demand, init_inventory = get_cached_hf_data(facility_choice)
+            elif data_source_mode == "📁 Upload Custom Demand CSV" and uploaded_file is not None:
                 try:
-                    demand_df = load_demand_data(uploaded_file.getvalue())
-                    inventory_df = load_default_inventory()
-                    st.success("Uploaded CSV successfully loaded and validated!")
+                    init_demand = load_demand_data(uploaded_file.getvalue())
+                    init_inventory = load_default_inventory()
                 except Exception as e:
                     st.error(f"Error loading uploaded CSV: {e}")
                     st.stop()
             else:
-                st.info("Using default benchmark data until file is uploaded.")
-                demand_df = load_default_demand()
-                inventory_df = load_default_inventory()
-        else:
-            demand_df = load_default_demand()
-            inventory_df = load_default_inventory()
+                init_demand = load_default_demand()
+                init_inventory = load_default_inventory()
+
+            st.session_state["active_demand_df"] = init_demand.copy()
+            st.session_state["active_inventory_df"] = init_inventory.copy()
+            st.session_state["hospital_requests"] = generate_sample_hospital_requests()
+            st.session_state["donor_registry"] = generate_sample_donor_registry()
+            st.session_state["current_source_key"] = source_key
+            st.session_state["data_modified"] = False
+            st.session_state["last_change_event"] = None
+
+        demand_df = st.session_state["active_demand_df"]
+        inventory_df = st.session_state["active_inventory_df"]
+
+        if data_source_mode == "🌐 Hugging Face Healthcare Dataset (Real)":
+            st.success(f"Active HF: **{facility_choice}** ({len(demand_df):,} daily records).")
+        elif data_source_mode == "📁 Upload Custom Demand CSV" and uploaded_file is not None:
+            st.success(f"Custom CSV loaded ({len(demand_df):,} daily records).")
+
+        if st.session_state.get("data_modified", False):
+            st.info("🟢 **Live Data Mode:** Custom records added/modified in this session.")
+            if st.button("🔄 Reset to Baseline Dataset", key="btn_reset_sidebar", use_container_width=True):
+                if data_source_mode == "🌐 Hugging Face Healthcare Dataset (Real)":
+                    init_demand, init_inventory = get_cached_hf_data(facility_choice)
+                elif data_source_mode == "📁 Upload Custom Demand CSV" and uploaded_file is not None:
+                    init_demand = load_demand_data(uploaded_file.getvalue())
+                    init_inventory = load_default_inventory()
+                else:
+                    init_demand = load_default_demand()
+                    init_inventory = load_default_inventory()
+                st.session_state["active_demand_df"] = init_demand.copy()
+                st.session_state["active_inventory_df"] = init_inventory.copy()
+                st.session_state["hospital_requests"] = generate_sample_hospital_requests()
+                st.session_state["donor_registry"] = generate_sample_donor_registry()
+                st.session_state["data_modified"] = False
+                st.session_state["last_change_event"] = None
+                st.rerun()
+
+        st.markdown("---")
+        st.subheader("📥 Export Live Session Data")
+        c_exp1, c_exp2 = st.columns(2)
+        with c_exp1:
+            st.download_button(
+                label="Demand CSV",
+                data=demand_df.to_csv(index=False),
+                file_name="active_demand_session.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
+        with c_exp2:
+            st.download_button(
+                label="Inventory CSV",
+                data=inventory_df.to_csv(index=False),
+                file_name="active_inventory_session.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
 
         available_groups = sorted(demand_df["blood_group"].unique())
 
@@ -401,10 +461,11 @@ def run_dashboard():
     )
 
     # ==========================================
-    # 7 MAIN PRESENTATION NAVIGATION TABS
+    # 8 MAIN NAVIGATION TABS (INCLUDING LIVE DATA STUDIO)
     # ==========================================
-    tab_overview, tab_forecast, tab_eda, tab_inventory, tab_emergency, tab_hospital, tab_benchmark = st.tabs(
+    tab_studio, tab_overview, tab_forecast, tab_eda, tab_inventory, tab_emergency, tab_hospital, tab_benchmark = st.tabs(
         [
+            "⚡ Live Data Studio & Instant AI Output",
             "🩺 Executive Dashboard & Stock Risk",
             "🔮 AI Demand Forecasting",
             "📊 Exploratory Data Analysis (EDA)",
@@ -416,7 +477,341 @@ def run_dashboard():
     )
 
     # ==========================================
-    # TAB 1: EXECUTIVE DASHBOARD & STOCK RISK
+    # TAB 1: LIVE DATA STUDIO & INSTANT AI OUTPUT
+    # ==========================================
+    with tab_studio:
+        st.subheader("⚡ Live Data Studio: Interactive Data Ingestion & Real-Time AI Output")
+        st.markdown(
+            "Directly change or insert demand records, adjust inventory stock levels, or run stress-test simulations. "
+            "**All AI forecasts, safety stock thresholds, and risk alerts update simultaneously in real time on the right.**"
+        )
+
+        col_studio_in, col_studio_out = st.columns([1, 1.15], gap="large")
+
+        with col_studio_in:
+            st.markdown("### 📥 Change or Insert Data")
+            sub_insert, sub_table, sub_stock, sub_sim = st.tabs(
+                [
+                    "➕ Quick Insert",
+                    "✏️ Spreadsheet Editor",
+                    "📦 Stock Adjuster",
+                    "🎛️ Scenario Simulator",
+                ]
+            )
+
+            with sub_insert:
+                st.markdown("##### ➕ Insert Daily Demand Observation")
+                st.caption("Add a new daily demand observation. Machine learning models will automatically retrain and update forecasts.")
+
+                c_ins1, c_ins2 = st.columns(2)
+                with c_ins1:
+                    ins_bg = st.selectbox(
+                        "Target Blood Group",
+                        available_groups,
+                        index=available_groups.index(selected_blood_group) if selected_blood_group in available_groups else 0,
+                        key="studio_bg_select",
+                    )
+                with c_ins2:
+                    bg_dates = demand_df[demand_df["blood_group"] == ins_bg]["date"]
+                    default_date = (bg_dates.max() + pd.Timedelta(days=1)).date() if not bg_dates.empty else pd.Timestamp.today().date()
+                    ins_date = st.date_input("Observation Date", value=default_date, key="studio_date_input")
+
+                c_ins3, c_ins4 = st.columns(2)
+                with c_ins3:
+                    ins_units = st.number_input(
+                        "Demand Units Requested",
+                        min_value=0,
+                        max_value=500,
+                        value=15,
+                        step=1,
+                        key="studio_units_input",
+                        help="Number of blood units demanded on this date.",
+                    )
+                with c_ins4:
+                    ins_mode = st.radio(
+                        "If date exists:",
+                        ["Overwrite", "Add units"],
+                        horizontal=True,
+                        key="studio_mode_input",
+                    )
+
+                if st.button("🚀 Insert Record & Recalculate AI Output", type="primary", use_container_width=True, key="btn_insert_demand"):
+                    mode_val = "add" if ins_mode == "Add units" else "overwrite"
+                    updated_demand = insert_or_update_demand_record(
+                        st.session_state["active_demand_df"],
+                        entry_date=ins_date,
+                        blood_group=ins_bg,
+                        demand_units=ins_units,
+                        mode=mode_val,
+                    )
+                    st.session_state["active_demand_df"] = updated_demand
+                    st.session_state["data_modified"] = True
+                    st.session_state["last_change_event"] = f"Inserted {ins_units} units for {ins_bg} on {ins_date}"
+                    st.success(f"✅ Successfully inserted {ins_units} units for {ins_bg} on {ins_date}! AI output updated.")
+                    st.rerun()
+
+            with sub_table:
+                st.markdown("##### ✏️ Interactive Spreadsheet Editor")
+                st.caption("Click any cell to edit past demand numbers, or click the '+' button to add new rows directly in the table.")
+
+                table_bg_filter = st.selectbox(
+                    "Filter by Blood Group",
+                    ["(All Blood Groups)"] + available_groups,
+                    index=available_groups.index(selected_blood_group) + 1 if selected_blood_group in available_groups else 0,
+                    key="studio_table_filter",
+                )
+
+                if table_bg_filter == "(All Blood Groups)":
+                    edit_slice = demand_df.tail(60).copy()
+                else:
+                    edit_slice = demand_df[demand_df["blood_group"] == table_bg_filter].tail(60).copy()
+
+                edit_slice["date"] = pd.to_datetime(edit_slice["date"]).dt.strftime("%Y-%m-%d")
+
+                edited_result = st.data_editor(
+                    edit_slice,
+                    num_rows="dynamic",
+                    use_container_width=True,
+                    key="studio_demand_editor",
+                    column_config={
+                        "date": st.column_config.DateColumn("Date", required=True),
+                        "blood_group": st.column_config.SelectboxColumn("Blood Group", options=available_groups, required=True),
+                        "demand_units": st.column_config.NumberColumn("Demand (Units)", min_value=0, max_value=500, step=1, required=True),
+                    },
+                )
+
+                if st.button("💾 Apply & Save Table Changes", type="primary", use_container_width=True, key="btn_save_table"):
+                    try:
+                        edited_df = edited_result.copy()
+                        edited_df["date"] = pd.to_datetime(edited_df["date"])
+                        edited_df["blood_group"] = edited_df["blood_group"].astype(str).str.strip().str.upper()
+                        edited_df["demand_units"] = pd.to_numeric(edited_df["demand_units"], errors="coerce").fillna(0)
+
+                        merged = pd.concat([demand_df, edited_df]).drop_duplicates(subset=["date", "blood_group"], keep="last")
+                        merged = merged.sort_values(["blood_group", "date"]).reset_index(drop=True)
+                        st.session_state["active_demand_df"] = merged
+                        st.session_state["data_modified"] = True
+                        st.session_state["last_change_event"] = "Updated demand records via Spreadsheet Editor"
+                        st.success("✅ Changes applied! AI models retrained and outputs refreshed.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Error saving table: {e}")
+
+            with sub_stock:
+                st.markdown("##### 📦 Live Facility Stock & Threshold Adjuster")
+                st.caption("Change available units, low stock thresholds, or expiring units for any blood group.")
+
+                c_st1, c_st2 = st.columns(2)
+                with c_st1:
+                    stock_bg = st.selectbox(
+                        "Target Blood Group",
+                        available_groups,
+                        index=available_groups.index(selected_blood_group) if selected_blood_group in available_groups else 0,
+                        key="studio_stock_bg",
+                    )
+                with c_st2:
+                    current_inv_row = inventory_df[inventory_df["blood_group"] == stock_bg]
+                    def_avail = int(current_inv_row.iloc[0]["available_units"]) if not current_inv_row.empty else 20
+                    def_thresh = int(current_inv_row.iloc[0]["low_stock_threshold"]) if not current_inv_row.empty else 10
+                    def_exp = int(current_inv_row.iloc[0]["units_expiring_soon"]) if not current_inv_row.empty else 0
+
+                c_st3, c_st4, c_st5 = st.columns(3)
+                with c_st3:
+                    new_avail = st.number_input("Available Stock", min_value=0, max_value=500, value=def_avail, step=1, key="studio_new_avail")
+                with c_st4:
+                    new_thresh = st.number_input("Low Stock Threshold", min_value=0, max_value=200, value=def_thresh, step=1, key="studio_new_thresh")
+                with c_st5:
+                    new_exp = st.number_input("Expiring Soon", min_value=0, max_value=100, value=def_exp, step=1, key="studio_new_exp")
+
+                if st.button(f"⚡ Update Stock for {stock_bg}", type="primary", use_container_width=True, key="btn_update_stock"):
+                    updated_inv = update_inventory_units(
+                        st.session_state["active_inventory_df"],
+                        blood_group=stock_bg,
+                        available_units=new_avail,
+                        low_stock_threshold=new_thresh,
+                        units_expiring_soon=new_exp,
+                    )
+                    st.session_state["active_inventory_df"] = updated_inv
+                    st.session_state["data_modified"] = True
+                    st.session_state["last_change_event"] = f"Updated inventory for {stock_bg}: {new_avail} units"
+                    st.success(f"✅ Inventory for {stock_bg} updated to {new_avail} units! Stock risk recalculated.")
+                    st.rerun()
+
+                st.markdown("###### Multi-Group Inventory Overview (All 8 Groups)")
+                st.dataframe(inventory_df, use_container_width=True, hide_index=True)
+
+            with sub_sim:
+                st.markdown("##### 🎛️ Rapid What-If Scenario Sandbox")
+                st.caption("Test hypothetical clinical stress scenarios without permanently modifying records.")
+
+                sim_surge = st.slider("Demand Surge Factor", min_value=0.5, max_value=3.0, value=1.0, step=0.1, help="Simulate sudden demand change (e.g. 1.5 = +50% surge)")
+                sim_lead = st.slider("Simulated Replenishment Lead Time (Days)", 1, 14, lead_time)
+                sim_stock = st.slider("Simulated Available Units", 0, 150, cur_stock)
+
+                sim_metrics = compute_inventory_metrics(
+                    current_stock=sim_stock,
+                    history_demand=group_df["demand_units"] * sim_surge,
+                    lead_time_days=sim_lead,
+                    service_level=service_level,
+                )
+                sim_risk = compute_stock_risk_status(
+                    current_stock=sim_stock,
+                    safety_stock=sim_metrics["safety_stock"],
+                    reorder_point=sim_metrics["reorder_point"],
+                    forecast_demand=int(forecast_sum * sim_surge),
+                )
+
+                st.markdown("###### Scenario Simulation Results:")
+                col_sb1, col_sb2 = st.columns(2)
+                col_sb1.metric("Simulated Safety Stock", f"{sim_metrics['safety_stock']} units")
+                col_sb2.metric("Simulated Reorder Point", f"{sim_metrics['reorder_point']} units")
+                col_sb3, col_sb4 = st.columns(2)
+                col_sb3.metric("Simulated Risk Level", sim_risk["badge"])
+                col_sb4.metric("Recommended Order", f"{sim_metrics['recommended_order']} units")
+
+        with col_studio_out:
+            st.markdown("### 📤 Live AI Output & Decision Engine")
+            st.markdown(
+                f"<div style='display:flex;gap:8px;align-items:center;margin-bottom:12px;'>"
+                f"<span style='background:#b71c1c;color:white;padding:3px 10px;border-radius:12px;font-size:0.85rem;font-weight:600;'>Group: {selected_blood_group}</span>"
+                f"<span style='background:#f1f3f5;color:#333;padding:3px 10px;border-radius:12px;font-size:0.85rem;'>Model: {selected_model_name}</span>"
+                f"<span style='background:#f1f3f5;color:#333;padding:3px 10px;border-radius:12px;font-size:0.85rem;'>Horizon: {forecast_horizon} Days</span>"
+                f"<span style='background:#f1f3f5;color:#333;padding:3px 10px;border-radius:12px;font-size:0.85rem;'>Lead Time: {lead_time}d</span>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+
+            if st.session_state.get("last_change_event"):
+                st.info(f"⚡ **Recent Ingestion Event:** {st.session_state['last_change_event']}")
+
+            st.markdown("#### 1. Real-Time Operational Indicators")
+            g_c1, g_c2, g_c3 = st.columns(3)
+            g_c1.metric("Current Stock", f"{cur_stock} units")
+            g_c2.metric(f"Forecast Demand ({forecast_horizon}d)", f"{forecast_sum} units")
+            g_c3.metric(
+                "Net Balance",
+                f"{projected_gap:+d} units",
+                delta="Surplus" if projected_gap >= 0 else "Deficit Alert",
+                delta_color="normal" if projected_gap >= 0 else "inverse",
+            )
+
+            g_c4, g_c5, g_c6 = st.columns(3)
+            g_c4.metric("Safety Stock (SS)", f"{opt_metrics['safety_stock']} units")
+            g_c5.metric("Reorder Point (ROP)", f"{opt_metrics['reorder_point']} units")
+            g_c6.metric(
+                "Stock Risk Status",
+                stock_risk["level"],
+                delta=stock_risk["badge"],
+                delta_color="normal" if stock_risk["level"] == "Normal" else "inverse",
+            )
+
+            st.markdown("#### 2. Synchronized Demand Trajectory & Forecast Bounds")
+            fig_live = go.Figure()
+
+            recent_hist = group_df.tail(45)
+            fig_live.add_trace(
+                go.Scatter(
+                    x=recent_hist["date"],
+                    y=recent_hist["demand_units"],
+                    mode="lines+markers",
+                    name="Historical Observed Demand",
+                    line=dict(color="#495057", width=2),
+                    marker=dict(size=5),
+                )
+            )
+
+            fig_live.add_trace(
+                go.Scatter(
+                    x=forecast_df["date"],
+                    y=forecast_df["upper_bound"],
+                    mode="lines",
+                    line=dict(width=0),
+                    showlegend=False,
+                    name="Upper Bound",
+                )
+            )
+            fig_live.add_trace(
+                go.Scatter(
+                    x=forecast_df["date"],
+                    y=forecast_df["lower_bound"],
+                    mode="lines",
+                    line=dict(width=0),
+                    fill="tonexty",
+                    fillcolor="rgba(183, 28, 28, 0.15)",
+                    showlegend=False,
+                    name="Lower Bound",
+                )
+            )
+
+            fig_live.add_trace(
+                go.Scatter(
+                    x=forecast_df["date"],
+                    y=forecast_df["predicted_demand_units"],
+                    mode="lines+markers",
+                    line=dict(color="#b71c1c", width=3, dash="solid"),
+                    marker=dict(size=8, color="#b71c1c"),
+                    name=f"AI Forecast ({selected_model_name})",
+                )
+            )
+
+            fig_live.update_layout(
+                title=f"Demand History & Forward AI Forecast — Blood Group {selected_blood_group}",
+                xaxis_title="Date",
+                yaxis_title="Units Requested",
+                hovermode="x unified",
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                margin=dict(l=20, r=20, t=50, b=20),
+                height=320,
+            )
+            st.plotly_chart(fig_live, use_container_width=True)
+
+            st.markdown("#### 3. AI Automated Prescriptive Recommendation")
+            if cur_stock <= opt_metrics["safety_stock"]:
+                st.error(
+                    f"🚨 **CRITICAL SHORTAGE DETECTED:** Available stock ({cur_stock} units) is below Safety Stock "
+                    f"({opt_metrics['safety_stock']} units). **Action:** Mobilize emergency donor drives for "
+                    f"**{opt_metrics['recommended_order']} units** immediately!"
+                )
+            elif cur_stock <= opt_metrics["reorder_point"]:
+                st.warning(
+                    f"⚠️ **REORDER POINT BREACHED:** Current inventory ({cur_stock} units) has crossed the ROP "
+                    f"({opt_metrics['reorder_point']} units). **Action:** Order/collect **{opt_metrics['recommended_order']} units** "
+                    f"to return to target safe buffer."
+                )
+            else:
+                st.success(
+                    f"✅ **BUFFER HEALTHY:** Current inventory ({cur_stock} units) comfortably exceeds the Reorder Point "
+                    f"({opt_metrics['reorder_point']} units). Estimated **{opt_metrics['days_of_supply']} days** of supply remaining."
+                )
+
+            with st.expander("🩸 Emergency Compatible Donor Substitutes (Biological Fallback)", expanded=False):
+                compat_donors = get_compatible_donors(selected_blood_group)
+                donor_stocks = []
+                for d in compat_donors:
+                    d_row = inventory_df[inventory_df["blood_group"] == d]
+                    stock_qty = int(d_row.iloc[0]["available_units"]) if not d_row.empty else 0
+                    donor_stocks.append({
+                        "Compatible Donor Group": d,
+                        "Match Status": "Exact Match" if d == selected_blood_group else "Biological Substitute",
+                        "Units in Bank": stock_qty,
+                    })
+                st.dataframe(pd.DataFrame(donor_stocks), use_container_width=True, hide_index=True)
+
+            with st.expander(f"📋 View Detailed {forecast_horizon}-Day Numerical Forecast Table", expanded=False):
+                fc_tbl = forecast_df.copy()
+                fc_tbl["date"] = fc_tbl["date"].dt.strftime("%Y-%m-%d")
+                fc_tbl = fc_tbl.rename(
+                    columns={
+                        "date": "Future Date",
+                        "predicted_demand_units": "Point Forecast (Units)",
+                        "lower_bound": f"Lower Bound ({int(service_level*100)}%)",
+                        "upper_bound": f"Upper Bound ({int(service_level*100)}%)",
+                    }
+                )
+                st.dataframe(fc_tbl, use_container_width=True, hide_index=True)
+
+    # ==========================================
+    # TAB 2: EXECUTIVE DASHBOARD & STOCK RISK
     # ==========================================
     with tab_overview:
         st.subheader("🏥 Real-Time Blood Bank Inventory Status & Risk Indicators")
@@ -450,6 +845,29 @@ def run_dashboard():
 
         # Multi-group stock table
         st.markdown("### 📋 Multi-Blood Group Real-Time Inventory & Risk Classification")
+        
+        with st.expander("⚡ Quick Adjust Facility Stock Level (Real-Time Synchronized)", expanded=False):
+            col_ov1, col_ov2, col_ov3 = st.columns([1, 1, 1])
+            with col_ov1:
+                ov_bg = st.selectbox("Select Blood Group", available_groups, index=available_groups.index(selected_blood_group) if selected_blood_group in available_groups else 0, key="ov_stock_bg")
+            with col_ov2:
+                ov_cur_row = inventory_df[inventory_df["blood_group"] == ov_bg]
+                ov_cur_val = int(ov_cur_row.iloc[0]["available_units"]) if not ov_cur_row.empty else 20
+                ov_new_val = st.number_input("Available Stock (Units)", min_value=0, max_value=500, value=ov_cur_val, step=1, key="ov_stock_val")
+            with col_ov3:
+                st.write("")
+                st.write("")
+                if st.button("Apply Stock Update", key="btn_apply_ov_stock", use_container_width=True):
+                    st.session_state["active_inventory_df"] = update_inventory_units(
+                        st.session_state["active_inventory_df"],
+                        blood_group=ov_bg,
+                        available_units=ov_new_val,
+                    )
+                    st.session_state["data_modified"] = True
+                    st.session_state["last_change_event"] = f"Adjusted {ov_bg} stock to {ov_new_val} units"
+                    st.success(f"Updated {ov_bg} stock to {ov_new_val} units!")
+                    st.rerun()
+
         health_summary_df = generate_inventory_health_summary(
             inventory_df, demand_df, lead_time_days=lead_time, service_level=service_level
         )
@@ -463,7 +881,7 @@ def run_dashboard():
         col_s4.success(f"**Fresh Frozen Plasma (FFP)**\n\n• Shelf life: **{SHELF_LIFE_DAYS['Fresh Frozen Plasma (FFP)']} days**\n• Storage: ≤ -18°C\n• Target: Coagulation deficiency")
 
     # ==========================================
-    # TAB 2: AI DEMAND FORECASTING
+    # TAB 3: AI DEMAND FORECASTING
     # ==========================================
     with tab_forecast:
         st.subheader(f"🔮 Demand Forecasting Engine — Blood Group {selected_blood_group}")
@@ -474,6 +892,29 @@ def run_dashboard():
             f"Holdout MAPE: **{selected_eval_metrics['MAPE (%)']}%** | "
             f"R² Score: **{selected_eval_metrics['R² Score']}**"
         )
+
+        with st.expander(f"➕ Quick Insert Observation for {selected_blood_group}", expanded=False):
+            fc_c1, fc_c2, fc_c3 = st.columns([1, 1, 1])
+            with fc_c1:
+                fc_next_dt = (group_df["date"].max() + pd.Timedelta(days=1)).date()
+                fc_in_dt = st.date_input("Date", value=fc_next_dt, key="fc_ins_date")
+            with fc_c2:
+                fc_in_units = st.number_input("Demand Units", min_value=0, max_value=500, value=15, step=1, key="fc_ins_units")
+            with fc_c3:
+                st.write("")
+                st.write("")
+                if st.button("Add Record & Retrain", key="btn_fc_add_record", use_container_width=True):
+                    st.session_state["active_demand_df"] = insert_or_update_demand_record(
+                        st.session_state["active_demand_df"],
+                        entry_date=fc_in_dt,
+                        blood_group=selected_blood_group,
+                        demand_units=fc_in_units,
+                        mode="add",
+                    )
+                    st.session_state["data_modified"] = True
+                    st.session_state["last_change_event"] = f"Added {fc_in_units} units for {selected_blood_group} on {fc_in_dt}"
+                    st.success(f"Added {fc_in_units} units for {selected_blood_group}! Models retrained.")
+                    st.rerun()
 
         col_fc1, col_fc2 = st.columns(2)
         with col_fc1:
@@ -601,7 +1042,7 @@ def run_dashboard():
         )
 
     # ==========================================
-    # TAB 3: EXPLORATORY DATA ANALYSIS (EDA)
+    # TAB 4: EXPLORATORY DATA ANALYSIS (EDA)
     # ==========================================
     with tab_eda:
         st.subheader("📊 Exploratory Data Analysis & Demand Seasonality (Review 0 Slide 6 & 11)")
@@ -674,7 +1115,7 @@ def run_dashboard():
             st.plotly_chart(fig_pie, use_container_width=True)
 
     # ==========================================
-    # TAB 4: SAFETY STOCK & ROP PLANNER
+    # TAB 5: SAFETY STOCK & ROP PLANNER
     # ==========================================
     with tab_inventory:
         st.subheader("📦 Inventory Optimization & Safety Stock (ROP) Calculator (Review 0 Slide 8 & 9)")
@@ -727,7 +1168,7 @@ def run_dashboard():
                 )
 
     # ==========================================
-    # TAB 5: EMERGENCY ALLOCATION MATRIX
+    # TAB 6: EMERGENCY ALLOCATION MATRIX
     # ==========================================
     with tab_emergency:
         st.subheader("🩸 Emergency Cross-Matching & Compatibility Matrix (Review 0 Slide 8)")
@@ -801,43 +1242,105 @@ def run_dashboard():
                     )
 
     # ==========================================
-    # TAB 6: HOSPITAL REQUESTS & DONOR OPERATIONS
+    # TAB 7: HOSPITAL REQUESTS & DONOR OPERATIONS
     # ==========================================
     with tab_hospital:
         st.subheader("🏥 Hospital Requests & Centralized Donor Registry (Review 0 Slide 6 & 10)")
         st.markdown(
-            "Role-based platform integrating Hospital Emergency Requests with Donor Registry Mobilization."
+            "Role-based platform integrating Hospital Emergency Requests with Donor Registry Mobilization. "
+            "New clinical requests can be queued or fulfilled directly from available inventory in real time."
         )
 
         st.markdown("#### 1. Clinical Hospital Blood Requests")
-        hospital_reqs = generate_sample_hospital_requests()
+        hospital_reqs = st.session_state["hospital_requests"]
         st.dataframe(hospital_reqs, use_container_width=True, hide_index=True)
 
         st.markdown("##### ➕ Submit New Clinical Hospital Request")
         col_req1, col_req2, col_req3, col_req4 = st.columns(4)
         with col_req1:
-            new_hosp = st.text_input("Hospital Name", "District Trauma Hospital")
+            new_hosp = st.text_input("Hospital Name", "District Trauma Hospital", key="req_hosp")
+            new_ward = st.text_input("Department / Ward", "Emergency Trauma ICU", key="req_ward")
         with col_req2:
-            new_bg = st.selectbox("Requested Blood Group", available_groups, key="new_bg")
+            new_bg = st.selectbox("Requested Blood Group", available_groups, key="req_bg")
+            new_qty = st.number_input("Units Requested", min_value=1, max_value=50, value=3, key="req_qty")
         with col_req3:
-            new_qty = st.number_input("Units", min_value=1, max_value=20, value=3)
+            new_urgency = st.selectbox("Urgency", ["🚨 Emergency", "⚠️ Urgent", "Routine"], key="req_urgency")
+            auto_fulfill = st.checkbox("Auto-fulfill & deduct from bank inventory", value=True, key="req_auto_fulfill")
         with col_req4:
-            new_urgency = st.selectbox("Urgency", ["🚨 Emergency", "⚠️ Urgent", "Routine"])
+            st.write("")
+            st.write("")
+            submit_req_btn = st.button("🚀 Submit Request", type="primary", use_container_width=True, key="btn_submit_req")
 
-        if st.button("Submit Request"):
-            st.success(f"✅ Request submitted for **{new_qty} units of {new_bg}** for **{new_hosp}**! Status: *Queued for Crossmatch*.")
+        if submit_req_btn:
+            status_val = "Pending Review"
+            if auto_fulfill:
+                current_inv_df = st.session_state["active_inventory_df"]
+                bg_inv = current_inv_df[current_inv_df["blood_group"] == new_bg]
+                avail_units = int(bg_inv.iloc[0]["available_units"]) if not bg_inv.empty else 0
+                if avail_units >= new_qty:
+                    new_avail = avail_units - new_qty
+                    st.session_state["active_inventory_df"] = update_inventory_units(
+                        current_inv_df, blood_group=new_bg, available_units=new_avail
+                    )
+                    status_val = "Fulfilled & Dispatched"
+                    st.success(f"✅ Request fulfilled! Allocated {new_qty} units of {new_bg}. Remaining stock: {new_avail} units.")
+                else:
+                    status_val = "Shortage - Fallback Alert"
+                    st.warning(f"⚠️ Partial/Shortage: Only {avail_units} units available for {new_bg} ({new_qty} requested). Fallback crossmatch triggered!")
+            else:
+                st.info(f"✅ Request submitted for {new_qty} units of {new_bg}! Status: Pending Review.")
+
+            updated_reqs, req_id = add_hospital_request(
+                hospital_reqs,
+                hospital_name=new_hosp,
+                blood_group=new_bg,
+                units_requested=new_qty,
+                urgency_level=new_urgency,
+                ward=new_ward,
+                status=status_val,
+            )
+            st.session_state["hospital_requests"] = updated_reqs
+            st.session_state["data_modified"] = True
+            st.session_state["last_change_event"] = f"Hospital request {req_id} ({new_qty}x {new_bg}) submitted"
+            st.rerun()
 
         st.markdown("---")
         st.markdown("#### 2. Centralized Donor Registry & Mobilization Tracker")
         st.caption("Tracks donor eligibility based on standard 90-day cooldown interval between whole blood donations.")
-        donors_df = generate_sample_donor_registry()
+        donors_df = st.session_state["donor_registry"]
         st.dataframe(donors_df, use_container_width=True, hide_index=True)
 
         eligible_count = len(donors_df[donors_df["Eligibility Status"] == "Eligible"])
         st.info(f"💡 **{eligible_count} out of {len(donors_df)} registered donors** are currently eligible for immediate blood drive mobilization.")
 
+        with st.expander("➕ Register New Donor to Centralized Registry", expanded=False):
+            col_d1, col_d2, col_d3, col_d4 = st.columns(4)
+            with col_d1:
+                new_donor_name = st.text_input("Donor Full Name", "Ramesh Kumar", key="d_name_inp")
+            with col_d2:
+                new_donor_bg = st.selectbox("Donor Blood Group", available_groups, key="d_bg_inp")
+            with col_d3:
+                new_donor_days = st.number_input("Days Since Last Donation", min_value=0, max_value=365, value=100, key="d_days_inp")
+            with col_d4:
+                st.write("")
+                st.write("")
+                reg_donor_btn = st.button("➕ Register Donor", type="primary", use_container_width=True, key="btn_reg_donor")
+
+            if reg_donor_btn:
+                updated_donors, donor_id = add_donor_to_registry(
+                    donors_df,
+                    name=new_donor_name,
+                    blood_group=new_donor_bg,
+                    days_since_last_donation=new_donor_days,
+                )
+                st.session_state["donor_registry"] = updated_donors
+                st.session_state["data_modified"] = True
+                st.session_state["last_change_event"] = f"Registered donor {donor_id} ({new_donor_name}, {new_donor_bg})"
+                st.success(f"✅ Donor {new_donor_name} registered successfully under {donor_id}! Eligibility updated.")
+                st.rerun()
+
     # ==========================================
-    # TAB 7: MULTI-GROUP BENCHMARK & MODEL COMPARISON
+    # TAB 8: MULTI-GROUP BENCHMARK & MODEL COMPARISON
     # ==========================================
     with tab_benchmark:
         st.subheader("📑 Multi-Group Comparative Benchmark & Model Evaluation (Review 0 Slide 8 & 12)")

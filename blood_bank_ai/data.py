@@ -7,7 +7,7 @@ inventory snapshots from CSV files or uploaded file streams.
 
 from io import StringIO
 from pathlib import Path
-from typing import Any, Dict, Tuple, Union
+from typing import Any, Dict, Optional, Tuple, Union
 import pandas as pd
 
 
@@ -234,4 +234,121 @@ def generate_sample_hospital_requests() -> pd.DataFrame:
             },
         ]
     )
+
+
+def insert_or_update_demand_record(
+    df: pd.DataFrame,
+    entry_date: Union[str, pd.Timestamp],
+    blood_group: str,
+    demand_units: float,
+    mode: str = "overwrite",
+) -> pd.DataFrame:
+    """
+    Inserts a new daily demand record or updates an existing record for the given date and blood group.
+    Ensures date is parsed, blood group normalized, and units non-negative.
+    Returns a sorted, cleaned DataFrame.
+    """
+    ts = pd.to_datetime(entry_date)
+    bg = str(blood_group).strip().upper()
+    units = max(0.0, float(demand_units))
+
+    df_copy = df.copy()
+    mask = (df_copy["date"].dt.date == ts.date()) & (df_copy["blood_group"] == bg)
+    if mask.any():
+        if mode == "add":
+            df_copy.loc[mask, "demand_units"] += units
+        else:
+            df_copy.loc[mask, "demand_units"] = units
+    else:
+        new_row = pd.DataFrame([{"date": ts, "blood_group": bg, "demand_units": units}])
+        df_copy = pd.concat([df_copy, new_row], ignore_index=True)
+
+    df_copy = df_copy.sort_values(["blood_group", "date"]).reset_index(drop=True)
+    return df_copy
+
+
+def update_inventory_units(
+    inv_df: pd.DataFrame,
+    blood_group: str,
+    available_units: Optional[int] = None,
+    low_stock_threshold: Optional[int] = None,
+    units_expiring_soon: Optional[int] = None,
+) -> pd.DataFrame:
+    """
+    Updates inventory numbers (available units, threshold, expiring) for a specific blood group.
+    """
+    bg = str(blood_group).strip().upper()
+    df_copy = inv_df.copy()
+    mask = df_copy["blood_group"] == bg
+    if mask.any():
+        if available_units is not None:
+            df_copy.loc[mask, "available_units"] = max(0, int(available_units))
+        if low_stock_threshold is not None:
+            df_copy.loc[mask, "low_stock_threshold"] = max(0, int(low_stock_threshold))
+        if units_expiring_soon is not None:
+            df_copy.loc[mask, "units_expiring_soon"] = max(0, int(units_expiring_soon))
+    else:
+        new_row = pd.DataFrame([{
+            "blood_group": bg,
+            "available_units": max(0, int(available_units or 0)),
+            "low_stock_threshold": max(0, int(low_stock_threshold or 10)),
+            "units_expiring_soon": max(0, int(units_expiring_soon or 0)),
+        }])
+        df_copy = pd.concat([df_copy, new_row], ignore_index=True)
+    return df_copy.reset_index(drop=True)
+
+
+def add_hospital_request(
+    requests_df: pd.DataFrame,
+    hospital_name: str,
+    blood_group: str,
+    units_requested: int,
+    urgency_level: str = "⚠️ Urgent",
+    ward: str = "General ICU",
+    status: str = "Pending Review",
+) -> Tuple[pd.DataFrame, str]:
+    """
+    Appends a new hospital blood request to the tracking registry with a generated Request ID.
+    """
+    import datetime
+    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    next_num = 7800 + len(requests_df) + 1
+    req_id = f"REQ-{next_num}"
+    new_entry = {
+        "Request ID": req_id,
+        "Hospital / Clinic": hospital_name.strip() or "General Hospital",
+        "Ward": ward.strip() or "General ICU",
+        "Blood Group": blood_group.strip().upper(),
+        "Units Requested": max(1, int(units_requested)),
+        "Urgency Level": urgency_level,
+        "Requested Date": now_str,
+        "Status": status,
+    }
+    df_copy = pd.concat([pd.DataFrame([new_entry]), requests_df], ignore_index=True)
+    return df_copy, req_id
+
+
+def add_donor_to_registry(
+    donors_df: pd.DataFrame,
+    name: str,
+    blood_group: str,
+    days_since_last_donation: int = 120,
+    contact_status: str = "Verified",
+) -> Tuple[pd.DataFrame, str]:
+    """
+    Registers a new donor and calculates their donation eligibility status.
+    """
+    next_id = f"DNR-{1000 + len(donors_df) + 1}"
+    days = max(0, int(days_since_last_donation))
+    eligible = "Eligible" if days >= 90 else "Cooldown"
+    new_donor = {
+        "Donor ID": next_id,
+        "Name": name.strip() or "Anonymous Donor",
+        "Blood Group": blood_group.strip().upper(),
+        "Days Since Last Donation": days,
+        "Eligibility Status": eligible,
+        "Contact Status": contact_status,
+    }
+    df_copy = pd.concat([pd.DataFrame([new_donor]), donors_df], ignore_index=True)
+    return df_copy, next_id
 
