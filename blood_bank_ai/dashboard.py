@@ -788,7 +788,11 @@ def run_dashboard():
                 else:
                     edit_slice = demand_df[demand_df["blood_group"] == table_bg_filter].tail(60).copy()
 
-                edit_slice["date"] = pd.to_datetime(edit_slice["date"]).dt.strftime("%Y-%m-%d")
+                # Ensure edit_slice has a clean, reset index and valid compatible types for Streamlit data_editor
+                edit_slice = edit_slice[["date", "blood_group", "demand_units"]].copy().reset_index(drop=True)
+                edit_slice["date"] = pd.to_datetime(edit_slice["date"]).dt.date
+                edit_slice["blood_group"] = edit_slice["blood_group"].astype(str).str.strip().str.upper()
+                edit_slice["demand_units"] = pd.to_numeric(edit_slice["demand_units"], errors="coerce").fillna(0).astype(int)
 
                 # Dynamic key per filter prevents Streamlit session state index mismatch
                 editor_key = f"studio_demand_editor_{table_bg_filter}"
@@ -798,7 +802,7 @@ def run_dashboard():
                     use_container_width=True,
                     key=editor_key,
                     column_config={
-                        "date": st.column_config.DateColumn("Date", required=True),
+                        "date": st.column_config.DateColumn("Date", format="YYYY-MM-DD", required=True),
                         "blood_group": st.column_config.SelectboxColumn("Blood Group", options=available_groups, required=True),
                         "demand_units": st.column_config.NumberColumn("Demand (Units)", min_value=0, max_value=500, step=1, required=True),
                     },
