@@ -238,22 +238,29 @@ def generate_sample_hospital_requests() -> pd.DataFrame:
 
 def insert_or_update_demand_record(
     df: pd.DataFrame,
-    entry_date: Union[str, pd.Timestamp],
+    entry_date: Union[str, pd.Timestamp, Any],
     blood_group: str,
     demand_units: float,
     mode: str = "overwrite",
 ) -> pd.DataFrame:
     """
     Inserts a new daily demand record or updates an existing record for the given date and blood group.
-    Ensures date is parsed, blood group normalized, and units non-negative.
+    Safely handles date tuples/strings/timestamps, normalizes dates to midnight, validates blood group,
+    ensures units are non-negative, and drops duplicates cleanly.
     Returns a sorted, cleaned DataFrame.
     """
-    ts = pd.to_datetime(entry_date)
+    if isinstance(entry_date, (tuple, list)):
+        entry_date = entry_date[0] if len(entry_date) > 0 else pd.Timestamp.today().date()
+
+    ts = pd.to_datetime(entry_date).normalize()
     bg = str(blood_group).strip().upper()
     units = max(0.0, float(demand_units))
 
     df_copy = df.copy()
-    mask = (df_copy["date"].dt.date == ts.date()) & (df_copy["blood_group"] == bg)
+    df_copy["date"] = pd.to_datetime(df_copy["date"]).dt.normalize()
+    df_copy = df_copy.dropna(subset=["date", "blood_group", "demand_units"]).copy()
+
+    mask = (df_copy["date"] == ts) & (df_copy["blood_group"] == bg)
     if mask.any():
         if mode == "add":
             df_copy.loc[mask, "demand_units"] += units
@@ -263,8 +270,57 @@ def insert_or_update_demand_record(
         new_row = pd.DataFrame([{"date": ts, "blood_group": bg, "demand_units": units}])
         df_copy = pd.concat([df_copy, new_row], ignore_index=True)
 
+    df_copy = df_copy.drop_duplicates(subset=["date", "blood_group"], keep="last")
     df_copy = df_copy.sort_values(["blood_group", "date"]).reset_index(drop=True)
     return df_copy
+
+
+def insert_batch_demand_records(
+    df: pd.DataFrame,
+    entry_date: Union[str, pd.Timestamp, Any],
+    records_dict: Dict[str, float],
+    mode: str = "overwrite",
+) -> pd.DataFrame:
+    """
+    Inserts or updates records for multiple blood groups simultaneously on a specified date.
+    Ideal for fast, one-click end-of-day logging across all 8 blood groups.
+    """
+    df_curr = df.copy()
+    for bg, units in records_dict.items():
+        if units is not None:
+            df_curr = insert_or_update_demand_record(
+                df_curr,
+                entry_date=entry_date,
+                blood_group=bg,
+                demand_units=float(units),
+                mode=mode,
+            )
+    return df_curr
+
+
+def parse_pasted_demand_text(text: str) -> pd.DataFrame:
+    """
+    Parses pasted text or CSV lines containing date, blood group, and units.
+    Supports comma, pipe, or tab delimiters.
+    Example lines:
+        2026-10-29, A+, 15
+        2026-10-29 | O- | 8
+    """
+    lines = [line.strip() for line in text.strip().splitlines() if line.strip() and not line.strip().startswith("#")]
+    rows = []
+    for line in lines:
+        parts = [p.strip() for p in line.replace("\t", ",").replace("|", ",").split(",")]
+        if len(parts) >= 3:
+            try:
+                dt = pd.to_datetime(parts[0]).normalize()
+                bg = parts[1].strip().upper()
+                u = max(0.0, float(parts[2]))
+                rows.append({"date": dt, "blood_group": bg, "demand_units": u})
+            except Exception:
+                continue
+    if not rows:
+        raise ValueError("No valid records parsed. Format required: YYYY-MM-DD, Blood_Group, Units (e.g. 2026-10-29, A+, 15)")
+    return pd.DataFrame(rows)
 
 
 def update_inventory_units(

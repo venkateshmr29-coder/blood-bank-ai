@@ -60,21 +60,24 @@ def train_and_evaluate(group_df: pd.DataFrame) -> Tuple[Dict[str, Any], pd.DataF
     Trains multiple models on chronological split (first 80% train, last 20% test).
     Evaluates MAE, RMSE, MAPE, and R2 on holdout set.
     Refits models on full feature history for future forecasting.
+    Optimized for fast responsiveness and low memory footprint in Streamlit Cloud.
     """
     features = make_features(group_df)
-    if len(features) < 40:
-        raise ValueError("At least 55 daily records are recommended for this demonstration.")
+    if len(features) < 15:
+        raise ValueError("At least 30 daily records are recommended for time-series forecasting.")
 
-    split = int(len(features) * 0.8)
+    split = max(1, int(len(features) * 0.8))
     train, test = features.iloc[:split], features.iloc[split:]
+    if test.empty:
+        test = train.copy()
 
     models = {
         "Linear Regression": LinearRegression(),
         "Random Forest": RandomForestRegressor(
-            n_estimators=250, random_state=42, min_samples_leaf=2
+            n_estimators=100, random_state=42, min_samples_leaf=2
         ),
         "Gradient Boosting": GradientBoostingRegressor(
-            n_estimators=150, learning_rate=0.05, max_depth=2, random_state=42
+            n_estimators=80, learning_rate=0.05, max_depth=2, random_state=42
         ),
         "Ridge Regression": Ridge(alpha=1.0, random_state=42),
     }
@@ -273,22 +276,26 @@ def compute_key_group_forecasts(
     """
     Computes forecasted demand for the 4 key representative blood groups
     (A+, B+, O-, AB+) directly matching Review 0 Slide 13 Expected Results banner.
+    Lightweight and fast to ensure rapid dashboard recalculations.
     """
     key_groups = ["A+", "B+", "O-", "AB+"]
     results = {}
     for bg in key_groups:
-        gdf = demand_df[demand_df["blood_group"] == bg].copy()
-        if len(gdf) >= 55:
+        gdf = demand_df[demand_df["blood_group"] == bg].sort_values("date").copy()
+        if len(gdf) >= 30:
             try:
-                models, _, _, _, _ = train_and_evaluate(gdf)
-                target_model = models.get(model_name) or models.get("Gradient Boosting") or models.get("Random Forest")
-                if target_model:
-                    fc = forecast_next_days(gdf, target_model, horizon=horizon)
+                features = make_features(gdf)
+                if len(features) >= 15:
+                    gb = GradientBoostingRegressor(
+                        n_estimators=40, learning_rate=0.08, max_depth=2, random_state=42
+                    )
+                    gb.fit(features[FEATURE_COLUMNS], features["demand_units"])
+                    fc = forecast_next_days(gdf, gb, horizon=horizon)
                     results[bg] = int(fc["predicted_demand_units"].sum())
                 else:
                     results[bg] = int(gdf["demand_units"].tail(horizon).sum())
             except Exception:
-                results[bg] = int(gdf["demand_units"].tail(horizon).sum())
+                results[bg] = int(gdf["demand_units"].tail(horizon).sum()) if not gdf.empty else 0
         else:
             results[bg] = int(gdf["demand_units"].tail(horizon).sum()) if not gdf.empty else 0
     return results

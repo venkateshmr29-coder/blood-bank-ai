@@ -97,5 +97,30 @@ class DataTests(unittest.TestCase):
         self.assertEqual(updated.iloc[0]["Eligibility Status"], "Eligible")
 
 
+    def test_insert_batch_demand_records(self):
+        from blood_bank_ai.data import insert_batch_demand_records
+        df = pd.DataFrame([{"date": pd.Timestamp("2026-01-01"), "blood_group": "A+", "demand_units": 10.0}])
+        updated = insert_batch_demand_records(
+            df,
+            entry_date="2026-01-02",
+            records_dict={"A+": 15.0, "B+": 12.0, "O-": 8.0},
+            mode="overwrite",
+        )
+        self.assertEqual(len(updated), 4)
+        self.assertEqual(float(updated[updated["blood_group"] == "O-"]["demand_units"].iloc[0]), 8.0)
+
+    def test_parse_pasted_demand_text(self):
+        from blood_bank_ai.data import parse_pasted_demand_text
+        text = """
+        2026-10-29, A+, 15
+        2026-10-29 | B+ | 12
+        2026-10-29\tO-\t8
+        """
+        parsed = parse_pasted_demand_text(text)
+        self.assertEqual(len(parsed), 3)
+        self.assertListEqual(list(parsed["blood_group"]), ["A+", "B+", "O-"])
+        self.assertListEqual(list(parsed["demand_units"]), [15.0, 12.0, 8.0])
+
+
 if __name__ == "__main__":
     unittest.main()
