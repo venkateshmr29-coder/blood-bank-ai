@@ -17,6 +17,7 @@ from blood_bank_ai.compatibility import (
     get_compatible_recipients,
     simulate_emergency_allocation,
 )
+from blood_bank_ai.copilot import ask_blood_bank_copilot, PRESET_QUICK_QUESTIONS
 from blood_bank_ai.data import (
     add_donor_to_registry,
     add_hospital_request,
@@ -31,19 +32,41 @@ from blood_bank_ai.data import (
     parse_pasted_demand_text,
     update_inventory_units,
 )
+from blood_bank_ai.disaster import (
+    get_preset_disaster_scenarios,
+    simulate_disaster_surge,
+)
 from blood_bank_ai.forecasting import (
     compute_key_group_forecasts,
     compute_stock_risk_status,
+    detect_demand_anomalies,
     evaluate_all_blood_groups,
     forecast_next_days,
     forecast_with_confidence_bounds,
     get_feature_importances,
+    recommend_best_model,
     train_and_evaluate,
 )
 from blood_bank_ai.inventory import (
     SHELF_LIFE_DAYS,
     compute_inventory_metrics,
     generate_inventory_health_summary,
+)
+from blood_bank_ai.network import (
+    execute_network_transfer,
+    generate_facility_comparison_matrix,
+    load_all_facility_snapshots,
+    optimize_inter_hospital_transfers,
+)
+from blood_bank_ai.report import (
+    calculate_facility_readiness_score,
+    generate_audit_report_markdown,
+)
+from blood_bank_ai.spoilage import (
+    COMPONENT_VALUATION,
+    compute_spoilage_risk_matrix,
+    generate_component_batch_breakdown,
+    generate_fefo_dispatch_queue,
 )
 
 
@@ -170,6 +193,14 @@ def run_dashboard():
             <div class="team-badge">
                 👥 <b>Project Team:</b> Venkatesh M.R (1VI24CD045) • Tejas S (1VI24CD043) • Karthik S (1VI24CD018) | <b>Academic Year:</b> 2026–27
             </div>
+            <div style="margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap;">
+                <a href="https://venkateshmr29-coder-blood-bank-ai-app-98ipak.streamlit.app" target="_blank" style="background: #2e7d32; color: #ffffff; padding: 4px 12px; border-radius: 6px; text-decoration: none; font-size: 0.82rem; font-weight: 600;">
+                    🌐 Live Cloud App: venkateshmr29-coder-blood-bank-ai-app-98ipak.streamlit.app
+                </a>
+                <a href="https://github.com/venkateshmr29-coder/blood-bank-ai" target="_blank" style="background: rgba(255,255,255,0.22); color: #ffffff; padding: 4px 12px; border-radius: 6px; text-decoration: none; font-size: 0.82rem;">
+                    📂 GitHub Repository
+                </a>
+            </div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -178,6 +209,18 @@ def run_dashboard():
     # Sidebar Controls
     with st.sidebar:
         st.header("⚙️ Project Controls")
+        
+        st.markdown(
+            """
+            <div style="background: #e8f5e9; border: 1px solid #a5d6a7; border-radius: 8px; padding: 10px; margin-bottom: 12px;">
+                <div style="color: #2e7d32; font-weight: 700; font-size: 0.85rem;">🟢 Live Cloud Deployment</div>
+                <a href="https://venkateshmr29-coder-blood-bank-ai-app-98ipak.streamlit.app" target="_blank" style="font-size: 0.78rem; color: #1b5e20; word-break: break-all; text-decoration: underline;">
+                    Open Streamlit App Link ↗
+                </a>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
         
         # Dataset Selection
         data_source_mode = st.radio(
@@ -230,9 +273,13 @@ def run_dashboard():
             st.session_state["active_inventory_df"] = init_inventory.copy()
             st.session_state["hospital_requests"] = generate_sample_hospital_requests()
             st.session_state["donor_registry"] = generate_sample_donor_registry()
+            st.session_state["facility_snapshots"] = load_all_facility_snapshots()
             st.session_state["current_source_key"] = source_key
             st.session_state["data_modified"] = False
             st.session_state["last_change_event"] = None
+
+        if "facility_snapshots" not in st.session_state:
+            st.session_state["facility_snapshots"] = load_all_facility_snapshots()
 
         demand_df = st.session_state["active_demand_df"]
         inventory_df = st.session_state["active_inventory_df"]
@@ -337,8 +384,9 @@ def run_dashboard():
         )
 
         model_options = [
-            "Random Forest",
+            "Weighted Ensemble (AI Stacking)",
             "Gradient Boosting",
+            "Random Forest",
             "Linear Regression",
             "Ridge Regression",
             "7-day seasonal naive",
@@ -347,7 +395,7 @@ def run_dashboard():
             "Active ML Model",
             model_options,
             index=0,
-            help="Candidate models specified in Review 0 Slide 8 & 12 (Linear Regression, RF, Gradient Boosting, Ridge, Naive).",
+            help="Candidate models: AI Weighted Stacking Ensemble, Gradient Boosting, RF, Linear Regression, Ridge, Naive.",
         )
 
         st.markdown("---")
@@ -520,13 +568,30 @@ def run_dashboard():
     )
 
     # ==========================================
-    # 8 MAIN NAVIGATION TABS (INCLUDING LIVE DATA STUDIO)
+    # 12 MAIN NAVIGATION TABS (INCLUDING ADVANCED AI MODULES)
     # ==========================================
-    tab_studio, tab_overview, tab_forecast, tab_eda, tab_inventory, tab_emergency, tab_hospital, tab_benchmark = st.tabs(
+    (
+        tab_studio,
+        tab_overview,
+        tab_copilot,
+        tab_forecast,
+        tab_network,
+        tab_disaster,
+        tab_spoilage,
+        tab_eda,
+        tab_inventory,
+        tab_emergency,
+        tab_hospital,
+        tab_benchmark,
+    ) = st.tabs(
         [
             "⚡ Live Data Studio & Instant AI Output",
-            "🩺 Executive Dashboard & Stock Risk",
-            "🔮 AI Demand Forecasting",
+            "🩺 Executive Dashboard & Audit Report",
+            "🤖 AI Clinical Decision Copilot",
+            "🔮 AI Demand Forecasting & Anomalies",
+            "🌐 Inter-Hospital Network Rebalancing",
+            "🚨 Disaster Surge & MCI Simulator",
+            "⏳ FEFO & Component Spoilage Planner",
             "📊 Exploratory Data Analysis (EDA)",
             "📦 Safety Stock & ROP Planner",
             "🩸 Emergency Allocation Matrix",
@@ -1116,11 +1181,111 @@ def run_dashboard():
         col_s3.warning(f"**Platelets**\n\n• Shelf life: **{SHELF_LIFE_DAYS['Platelets']} days**\n• Storage: 20°C to 24°C (Agitated)\n• Target: Thrombocytopenia")
         col_s4.success(f"**Fresh Frozen Plasma (FFP)**\n\n• Shelf life: **{SHELF_LIFE_DAYS['Fresh Frozen Plasma (FFP)']} days**\n• Storage: ≤ -18°C\n• Target: Coagulation deficiency")
 
+        st.markdown("---")
+        st.markdown("### 📋 Executive Clinical Operational Audit & Review Report")
+        score_val, score_rating = calculate_facility_readiness_score(inventory_df)
+
+        c_rep1, c_rep2, c_rep3 = st.columns([1.2, 1.5, 1])
+        with c_rep1:
+            st.metric("Facility Preparedness Score", f"{score_val} / 100", score_rating)
+        with c_rep2:
+            st.info(f"**Readiness Status:** {score_rating}\n\nAutomated synthesis of real-time inventory buffers, safety stock, and AI holdout validation.")
+        with c_rep3:
+            report_md_str = generate_audit_report_markdown(
+                inventory_df=inventory_df,
+                demand_df=demand_df,
+                metrics_df=metrics_df,
+                key_forecasts=key_forecasts,
+                facility_name=facility_choice if data_source_mode == "🌐 Hugging Face Healthcare Dataset (Real)" else "District Hospital",
+            )
+            st.download_button(
+                label="📥 Download Clinical Audit Report (.md)",
+                data=report_md_str,
+                file_name="blood_bank_clinical_audit_report.md",
+                mime="text/markdown",
+                use_container_width=True,
+            )
+
+        with st.expander("📄 View Live Rendered Audit Report (Formatted)", expanded=False):
+            st.markdown(report_md_str)
+
     # ==========================================
-    # TAB 3: AI DEMAND FORECASTING
+    # TAB 3: AI CLINICAL DECISION COPILOT
+    # ==========================================
+    with tab_copilot:
+        st.subheader("🤖 AI Clinical Decision Support Copilot & Operations Assistant")
+        st.caption(
+            "Offline-capable expert clinical decision support synthesizing real-time inventory levels, "
+            "predictive time-series forecasts, biological immunohematology compatibility, and donor readiness."
+        )
+
+        st.markdown("##### ⚡ Quick Clinical Intelligence Inquiries")
+        col_chip1, col_chip2, col_chip3 = st.columns(3)
+        col_chip4, col_chip5, col_chip6 = st.columns(3)
+
+        if "copilot_active_query" not in st.session_state:
+            st.session_state["copilot_active_query"] = PRESET_QUICK_QUESTIONS[0]
+
+        if col_chip1.button(PRESET_QUICK_QUESTIONS[0], use_container_width=True):
+            st.session_state["copilot_active_query"] = PRESET_QUICK_QUESTIONS[0]
+        if col_chip2.button(PRESET_QUICK_QUESTIONS[1], use_container_width=True):
+            st.session_state["copilot_active_query"] = PRESET_QUICK_QUESTIONS[1]
+        if col_chip3.button(PRESET_QUICK_QUESTIONS[2], use_container_width=True):
+            st.session_state["copilot_active_query"] = PRESET_QUICK_QUESTIONS[2]
+        if col_chip4.button(PRESET_QUICK_QUESTIONS[3], use_container_width=True):
+            st.session_state["copilot_active_query"] = PRESET_QUICK_QUESTIONS[3]
+        if col_chip5.button(PRESET_QUICK_QUESTIONS[4], use_container_width=True):
+            st.session_state["copilot_active_query"] = PRESET_QUICK_QUESTIONS[4]
+        if col_chip6.button(PRESET_QUICK_QUESTIONS[5], use_container_width=True):
+            st.session_state["copilot_active_query"] = PRESET_QUICK_QUESTIONS[5]
+
+        st.markdown("---")
+        custom_q = st.text_input(
+            "Or ask a custom question (e.g., 'Emergency surge of 15 units A+', 'Evaluate donor readiness'):",
+            value=st.session_state["copilot_active_query"],
+            key="copilot_text_input",
+        )
+
+        copilot_response = ask_blood_bank_copilot(
+            query=custom_q,
+            inventory_df=inventory_df,
+            demand_df=demand_df,
+            donor_df=st.session_state["donor_registry"],
+            hospital_reqs_df=st.session_state["hospital_requests"],
+            selected_bg=selected_blood_group,
+            lead_time=lead_time,
+            service_level=service_level,
+        )
+
+        st.markdown("#### 🎯 Clinical Copilot Diagnostic & Operational Guidance")
+        c_k1, c_k2, c_k3 = st.columns(3)
+        metrics_dict = copilot_response["key_metrics"]
+        m_items = list(metrics_dict.items())
+        if len(m_items) >= 1:
+            c_k1.metric(m_items[0][0], m_items[0][1])
+        if len(m_items) >= 2:
+            c_k2.metric(m_items[1][0], m_items[1][1])
+        if len(m_items) >= 3:
+            c_k3.metric(m_items[2][0], m_items[2][1])
+
+        st.markdown(copilot_response["answer_markdown"])
+
+        st.markdown("##### 🩺 Prioritized Clinical Action Directives:")
+        for idx, act in enumerate(copilot_response["action_items"], 1):
+            st.success(f"**Step {idx}:** {act}")
+
+    # ==========================================
+    # TAB 4: AI DEMAND FORECASTING
     # ==========================================
     with tab_forecast:
         st.subheader(f"🔮 Demand Forecasting Engine — Blood Group {selected_blood_group}")
+
+        best_rec = recommend_best_model(metrics_df)
+        st.info(
+            f"⭐ **AI Top Recommended Model:** **{best_rec['best_model']}** (Holdout MAE: `{best_rec['mae']:.2f}` units/day, RMSE: `{best_rec['rmse']:.2f}`). "
+            f"{best_rec['rationale']}"
+        )
+
         st.caption(
             f"Active Model: **{selected_model_name}** | Horizon: **{forecast_horizon} days** | "
             f"Holdout MAE: **{selected_eval_metrics['MAE (units/day)']}** | "
@@ -1182,6 +1347,7 @@ def run_dashboard():
                 "Random Forest",
                 "Gradient Boosting",
                 "Ridge Regression",
+                "Weighted Ensemble (AI Stacking)",
             ]
             for m in model_names:
                 if m in test_predictions:
@@ -1277,8 +1443,191 @@ def run_dashboard():
             mime="text/csv",
         )
 
+        anomalies_df = detect_demand_anomalies(group_df)
+        if not anomalies_df.empty:
+            with st.expander(f"🚨 Statistical Demand Anomalies & Surge Spikes ({len(anomalies_df)} Detected Events)", expanded=False):
+                st.caption("Adaptive rolling Z-score anomaly detector identifying unusual clinical demand surges, trauma clusters, or intake deficits.")
+                st.dataframe(anomalies_df, use_container_width=True, hide_index=True)
+
     # ==========================================
-    # TAB 4: EXPLORATORY DATA ANALYSIS (EDA)
+    # TAB 5: INTER-HOSPITAL NETWORK REBALANCING
+    # ==========================================
+    with tab_network:
+        st.subheader("🌐 Regional Inter-Hospital Supply Chain & Transfer Optimizer")
+        st.markdown(
+            "Multi-facility coordination across **National Blood Centre**, **District Hospital**, and **Rural Hospital**. "
+            "Optimizes inter-hospital transfers to eliminate localized stockouts and minimize wastage."
+        )
+
+        fac_snapshots = st.session_state["facility_snapshots"]
+        transfers_opt = optimize_inter_hospital_transfers(fac_snapshots, safety_buffer=10)
+
+        col_net1, col_net2, col_net3, col_net4 = st.columns(4)
+        col_net1.metric("Network Logistics Status", transfers_opt["network_status"])
+        col_net2.metric("Recommended Transfers", f"{transfers_opt['total_transfers_count']} shipments")
+        col_net3.metric("Total Units Rebalanced", f"{transfers_opt['total_units_rebalanced']} units")
+        col_net4.metric("Critical Stockouts Averted", f"{transfers_opt['critical_stockouts_prevented']} alerts")
+
+        st.markdown("#### 1. Cross-Facility Regional Blood Stock Comparison Matrix")
+        comp_matrix = generate_facility_comparison_matrix(fac_snapshots)
+        st.dataframe(comp_matrix, use_container_width=True, hide_index=True)
+
+        st.markdown("#### 2. Priority Inter-Facility Dispatch & Transfer Routing Table")
+        transfers_df = transfers_opt["transfers_df"]
+        if not transfers_df.empty:
+            st.dataframe(transfers_df, use_container_width=True, hide_index=True)
+
+            with st.expander("⚡ Execute Inter-Facility Transfer Shipment", expanded=False):
+                c_tr1, c_tr2, c_tr3, c_tr4 = st.columns(4)
+                with c_tr1:
+                    tr_src = st.selectbox("Source Facility (Surplus)", ["National Blood Centre", "District Hospital", "Rural Hospital"], key="tr_src_sel")
+                with c_tr2:
+                    tr_dst = st.selectbox("Destination Facility (Deficit)", ["Rural Hospital", "District Hospital", "National Blood Centre"], key="tr_dst_sel")
+                with c_tr3:
+                    tr_bg = st.selectbox("Blood Group", available_groups, key="tr_bg_sel")
+                with c_tr4:
+                    tr_units = st.number_input("Units to Transfer", min_value=1, max_value=50, value=5, key="tr_u_inp")
+
+                if st.button("🚀 Dispatch Transfer Shipment Now", type="primary", use_container_width=True, key="btn_dispatch_tr"):
+                    if tr_src == tr_dst:
+                        st.error("Source and destination facilities must be different.")
+                    else:
+                        st.session_state["facility_snapshots"] = execute_network_transfer(
+                            st.session_state["facility_snapshots"],
+                            source_fac=tr_src,
+                            dest_fac=tr_dst,
+                            blood_group=tr_bg,
+                            units=tr_units,
+                        )
+                        st.session_state["data_modified"] = True
+                        st.session_state["last_change_event"] = f"Dispatched {tr_units}x {tr_bg} from {tr_src} to {tr_dst}"
+                        st.success(f"✅ Dispatched {tr_units} units of {tr_bg} from {tr_src} to {tr_dst}! Inventories rebalanced.")
+                        st.rerun()
+        else:
+            st.success("✅ All facilities currently maintain balanced reserves. Zero inter-hospital transfers required.")
+
+    # ==========================================
+    # TAB 6: DISASTER SURGE & MCI SIMULATOR
+    # ==========================================
+    with tab_disaster:
+        st.subheader("🚨 Disaster Surge & Mass-Casualty Incident (MCI) Triage Simulator")
+        st.markdown(
+            "Stress-tests blood bank operational capacity against high-acuity mass-casualty surges "
+            "(multi-vehicle highway collisions, catastrophic blast incidents, dengue hemorrhagic outbreaks). "
+            "Evaluates universal donor exhaustion and emergency cross-match fallback limits."
+        )
+
+        preset_scenarios = get_preset_disaster_scenarios()
+        selected_scenario = st.selectbox(
+            "Select Disaster Scenario Preset",
+            list(preset_scenarios.keys()),
+            index=0,
+            key="mci_scenario_sel",
+        )
+        scen_info = preset_scenarios[selected_scenario]
+
+        c_sc1, c_sc2, c_sc3 = st.columns([2, 1, 1])
+        with c_sc1:
+            st.info(f"**Scenario Profile:** {scen_info['description']}\n\n**Severity Level:** `{scen_info['severity']}`")
+        with c_sc2:
+            st.metric("Estimated Casualties", f"{scen_info['casualties']} patients")
+        with c_sc3:
+            total_scen_demand = sum(scen_info["demand"].values())
+            st.metric("Total Blood Demanded", f"{total_scen_demand} units")
+
+        mci_result = simulate_disaster_surge(inventory_df, scenario_name=selected_scenario)
+
+        col_res1, col_res2, col_res3, col_res4 = st.columns(4)
+        col_res1.metric("Pre-Surge Stock", f"{mci_result['pre_stock_total']} units")
+        col_res2.metric("Total Units Allocated", f"{mci_result['total_allocated']} / {mci_result['total_requested']} units")
+        col_res3.metric(
+            "Shortfall Encountered",
+            f"{mci_result['shortfall']} units",
+            delta="Stock Shortage" if mci_result['shortfall'] > 0 else "Fully Met",
+            delta_color="inverse" if mci_result['shortfall'] > 0 else "normal",
+        )
+        col_res4.metric("Operational Runway", f"~{mci_result['hours_of_runway']} hours")
+
+        if mci_result["shortfall"] > 0:
+            st.error(
+                f"🚨 **CRITICAL DISASTER DEFICIT:** Blood bank inventory exhausted! Shortfall of {mci_result['shortfall']} units. "
+                "Immediate regional code-black mobilization required."
+            )
+        else:
+            st.success("✅ **SURGE CONTAINED:** All emergency casualty transfusions successfully met by current bank reserves and biological substitutes.")
+
+        if mci_result["exhausted_groups"]:
+            st.warning(f"⚠️ **Blood Groups Completely Depleted to Zero:** {', '.join(mci_result['exhausted_groups'])}")
+
+        st.markdown("#### 1. Blood Group Pre- vs Post-Surge Impact Breakdown")
+        st.dataframe(mci_result["impact_df"], use_container_width=True, hide_index=True)
+
+        st.markdown("#### 2. Emergency Operational Directives & MCI Action Checklist")
+        for directive in mci_result["emergency_checklist"]:
+            if "CRITICAL" in directive or "SHORTFALL" in directive:
+                st.error(f"• {directive}")
+            else:
+                st.info(f"• {directive}")
+
+    # ==========================================
+    # TAB 7: FEFO SPOILAGE & SHELF-LIFE PLANNER
+    # ==========================================
+    with tab_spoilage:
+        st.subheader("⏳ Blood Component Shelf-Life & FEFO (First-Expired, First-Out) Optimization")
+        st.markdown(
+            "Blood components have distinct biological lifespans. Enforcing **FEFO** allocation "
+            "prioritizes units nearing expiration for immediate scheduled transfusions, drastically cutting discard wastage and costs."
+        )
+
+        col_cv1, col_cv2, col_cv3, col_cv4 = st.columns(4)
+        col_cv1.info("**Packed RBCs (PRBC)**\n\n• Lifespan: **42 Days**\n• Cost: ₹1,600 / unit\n• Temp: 2°C to 6°C")
+        col_cv2.warning("**Platelets (Agitated)**\n\n• Lifespan: **5 Days** (Ultra-perishable)\n• Cost: ₹1,800 / unit\n• Temp: 20°C to 24°C")
+        col_cv3.info("**Whole Blood**\n\n• Lifespan: **35 Days**\n• Cost: ₹1,400 / unit\n• Temp: 2°C to 6°C")
+        col_cv4.success("**Fresh Frozen Plasma**\n\n• Lifespan: **365 Days**\n• Cost: ₹1,200 / unit\n• Temp: ≤ -18°C")
+
+        st.markdown("#### 1. Inventory Batch Age Distribution Cohorts")
+        batch_breakdown_df = generate_component_batch_breakdown(inventory_df)
+        st.dataframe(batch_breakdown_df, use_container_width=True, hide_index=True)
+
+        st.markdown("#### 2. Outdating Velocity & Discard Risk Matrix (3-Day Horizon)")
+        spoilage_matrix_df = compute_spoilage_risk_matrix(inventory_df, demand_df)
+        st.dataframe(spoilage_matrix_df, use_container_width=True, hide_index=True)
+
+        total_financial_risk = int(spoilage_matrix_df["Financial Risk (₹)"].sum())
+        total_units_risk = int(spoilage_matrix_df["Projected Waste (Units)"].sum())
+        if total_units_risk > 0:
+            st.warning(f"⚠️ **Financial Outdating Risk:** ₹{total_financial_risk:,} ({total_units_risk} units projected to outdate without FEFO priority dispatch).")
+        else:
+            st.success("✅ **Zero Waste Projected:** Expected clinical demand exceeds near-expiry batches across all groups.")
+
+        st.markdown("#### 3. Interactive FEFO Order Dispatch Simulator")
+        col_ff1, col_ff2, col_ff3 = st.columns([1, 1, 1.2])
+        with col_ff1:
+            fefo_bg = st.selectbox("Select Target Blood Group", available_groups, key="fefo_bg_sel")
+        with col_ff2:
+            fefo_qty = st.number_input("Units to Dispatch", min_value=1, max_value=60, value=8, key="fefo_qty_inp")
+        with col_ff3:
+            st.write("")
+            st.write("")
+            fefo_run_btn = st.button("🚀 Simulate FEFO Allocation", type="primary", use_container_width=True, key="btn_fefo_run")
+
+        if fefo_run_btn:
+            fefo_res = generate_fefo_dispatch_queue(batch_breakdown_df, requested_group=fefo_bg, units_needed=fefo_qty)
+            st.markdown(f"##### FEFO Allocation Result for {fefo_qty} units of {fefo_bg}:")
+            c_fa1, c_fa2, c_fa3 = st.columns(3)
+            c_fa1.metric("Units Allocated", f"{fefo_res['units_allocated']} / {fefo_qty}")
+            c_fa2.metric("Waste Prevented", f"{fefo_res['waste_prevented_units']} units", delta="FEFO Saved", delta_color="normal")
+            c_fa3.metric("Financial Savings", f"₹{fefo_res['savings_inr']:,}", delta="Saved Cost", delta_color="normal")
+
+            st.write("**Cohort Allocation Breakdown:**")
+            fefo_df = pd.DataFrame(
+                [{"Age Cohort": k, "Units Drawn": v} for k, v in fefo_res["cohort_breakdown"].items()]
+            )
+            st.dataframe(fefo_df, use_container_width=True, hide_index=True)
+            st.success(fefo_res["message"])
+
+    # ==========================================
+    # TAB 8: EXPLORATORY DATA ANALYSIS (EDA)
     # ==========================================
     with tab_eda:
         st.subheader("📊 Exploratory Data Analysis & Demand Seasonality (Review 0 Slide 6 & 11)")

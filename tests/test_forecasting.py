@@ -111,6 +111,41 @@ class ForecastingTests(unittest.TestCase):
         self.assertIn("AB+", res)
         self.assertGreater(res["A+"], 0)
 
+    def test_weighted_ensemble_and_recommendation(self):
+        from blood_bank_ai.forecasting import train_and_evaluate, recommend_best_model
+        history = pd.DataFrame(
+            {
+                "date": pd.date_range("2024-01-01", periods=60, freq="D"),
+                "demand_units": [8 + (i % 6) for i in range(60)],
+            }
+        )
+        models, _, _, predictions, metrics_df = train_and_evaluate(history)
+        self.assertIn("Weighted Ensemble (AI Stacking)", models)
+        self.assertIn("Weighted Ensemble (AI Stacking)", predictions)
+        self.assertIn("Weighted Ensemble (AI Stacking)", metrics_df["model"].values)
+
+        best_info = recommend_best_model(metrics_df)
+        self.assertIn("best_model", best_info)
+        self.assertIn("rationale", best_info)
+
+    def test_detect_demand_anomalies(self):
+        from blood_bank_ai.forecasting import detect_demand_anomalies
+        vals = [10] * 30
+        vals[15] = 45  # spike anomaly
+        vals[25] = 1   # dip anomaly
+        df = pd.DataFrame(
+            {
+                "date": pd.date_range("2024-01-01", periods=30, freq="D"),
+                "blood_group": ["O-"] * 30,
+                "demand_units": vals,
+            }
+        )
+        anomalies = detect_demand_anomalies(df, threshold_z=2.0)
+        self.assertGreater(len(anomalies), 0)
+        self.assertIn("z_score", anomalies.columns)
+        self.assertIn("Anomaly Type", anomalies.columns)
+
 
 if __name__ == "__main__":
     unittest.main()
+
